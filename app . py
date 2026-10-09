@@ -1,0 +1,98 @@
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import plotly.graph_objects as go
+
+st.set_page_config(page_title="FX Bweyale Analyzer", layout="wide")
+st.title("📈 FX Bweyale Analyzer - Supply & Demand")
+st.markdown("**Ogwang's Professional Forex Zone Detector**")
+
+st.sidebar.header("Settings")
+pair = st.sidebar.selectbox("Select Pair", ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "AUDUSD=X", "XAUUSD=X", "GBPJPY=X", "EURJPY=X", "BTC-USD"], index=0)
+period = st.sidebar.selectbox("Period", ["1mo", "3mo", "6mo"], index=1)
+interval = st.sidebar.selectbox("Interval", ["1h", "4h", "1d"], index=1)
+
+@st.cache_data(ttl=300)
+def get_data(symbol, period, interval):
+    try:
+        df = yf.download(symbol, period=period, interval=interval, auto_adjust=True)
+        if df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.reset_index(inplace=True)
+        return df
+    except:
+        return None
+
+df = get_data(pair, period, interval)
+
+if df is None or df.empty:
+    st.error("No data - try another pair. Yahoo may be busy.")
+    st.stop()
+
+def detect_zones(df, lookback=20):
+    zones = []
+    for i in range(lookback, len(df)-2):
+        body = abs(df['Close'][i] - df['Open'][i])
+        avg = df['Close'][i-lookback:i].diff().abs().mean()
+        if avg == 0:
+            continue
+        if df['Close'][i] > df['Open'][i] and body > avg*1.5:
+            if df['High'][i] > df['High'][i-lookback:i].max():
+                zones.append({'type':'DEMAND','top':max(df['Open'][i],df['Close'][i]),'bottom':min(df['Open'][i],df['Close'][i]),'index':i})
+        if df['Close'][i] < df['Open'][i] and body > avg*1.5:
+            if df['Low'][i] < df['Low'][i-lookback:i].min():
+                zones.append({'type':'SUPPLY','top':max(df['Open'][i],df['Close'][i]),'bottom':min(df['Open'][i],df['Close'][i]),'index':i})
+    return zones[-10:]
+
+zones = detect_zones(df)
+last_close = df['Close'].iloc[-1]
+
+signal = "WAIT"
+entry = sl = tp = None
+
+demands = [z for z in zones if z['type']=='DEMAND' and z['top'] < last_close]
+supplies = [z for z in zones if z['type']=='SUPPLY' and z['bottom'] > last_close]
+
+if demands:
+    nearest = demands[-1]
+    if (last_close - nearest['top'])/last_close*100 < 0.8:
+        signal = "BUY"
+        entry = nearest['top']
+        sl = nearest['bottom']*0.998
+        tp = last_close + (last_close - sl)*2
+
+if supplies and signal=="WAIT":
+    nearest = supplies[-1]
+    if (nearest['bottom'] - last_close)/last_close*100 < 0.8:
+        signal = "SELL"
+        entry = nearest['bottom']
+        sl = nearest['top']*1.002
+        tp = last_close - (sl - last_close)*2
+
+c1,c2,c3,c4 = st.columns(4)
+c1.metric("Pair", pair)
+c2.metric("Price", f"{last_close:.5f}")
+if signal=="BUY":
+    c3.markdown(f"<h2 style='color:green'>🟢 {signal}</h2>", unsafe_allow_html=True)
+elif signal=="SELL":
+    c3.markdown(f"<h2 style='color:red'>🔴 {signal}</h2>", unsafe_allow_html=True)
+else:
+    c3.markdown(f"<h2 style='color:gray'>⚪ {signal}</h2>", unsafe_allow_html=True)
+c4.metric("Zones", len(zones))
+
+if signal!="WAIT":
+    st.success(f"SIGNAL: {signal} | Entry: {entry:.5f} | SL: {sl:.5f} | TP: {tp:.5f} | RR 1:2")
+
+fig = go.Figure()
+fig.add_trace(go.Candlestick(x=df.iloc[:,0], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price"))
+for z in zones:
+    x0 = df.iloc[z['index'],0]
+    x1 = df.iloc[-1,0]
+    color = "rgba(0,255,0,0.25)" if z['type']=='DEMAND' else "rgba(255,0,0,0.25)"
+    line = "green" if z['type']=='DEMAND' else "red"
+    fig.add_shape(type="rect", x0=x0, x1=x1, y0=z['bottom'], y1=z['top'], fillcolor=color, line=dict(color=line, width=1), layer="below")
+fig.update_layout(height=600, xaxis_rangeslider_visible=False, title=f"{pair} - {interval} Supply/Demand Zones", yaxis_title="Price")
+st.plotly_chart(fig, use_container_width=True)
+st.caption("FX Bweyale Analyzer | Built for Ogwang | Not financial advice")
